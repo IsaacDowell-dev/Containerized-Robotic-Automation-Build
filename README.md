@@ -13,4 +13,4 @@ Remote Storage: In-lab NAS server for uploading program logs from the SHPi.
 Additional Nodes: Robotic Arm and Connected PLC (R2D2), team-member laptop, and station 2 CompactLogix PLC.
 
 # Out-of-Scope Boundary
-Due to time limitations, we plan on excluding the implementation of Docker Swarm for automated container deployment to the Raspberry Pis, and will instead opt for a BASH script to automatically SSH into each Pi and start their containers.
+Due to time limitations, we plan on excluding the implementation of Docker Swarm for automated container deployment to the Raspberry Pis, and will instead opt for a BASH script to automatically SSH into each Pi and start their containers. For similar reasons, we will exclude the Sense HAT IMU temperature sensing as a stop condition for the robot.
