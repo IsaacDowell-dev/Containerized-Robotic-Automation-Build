@@ -8,3 +8,6 @@ rand = "0.10.3"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_plot = "0.38.0"
+reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+egui_extras = "0.37.0"
