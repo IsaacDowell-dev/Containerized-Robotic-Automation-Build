@@ -1,59 +1,81 @@
 from pycomm3 import LogixDriver
-import sys
-import time
+from threading import Thread
+from queue import Queue
+from time import sleep
+import os
 
-"""
-ENTRY POINT: establishes connections to both PLCs and starts the main control loop
-"""
-def main():
+# Producer: reads tags from the controller plc and puts them onto a buffer
+def controller_tag_reader(buffer, controller_ip):
+    print("[PRODUCER] Starting to read from controller plc...")
     try:
-        # System arguments: plc IP addresses
-        CONTROL_PLC_IP = sys.argv[1] # if len(sys.argv) > 1 else '192.168.6.32' 
-        # ROBOT_PLC_IP = sys.argv[2] # if len(sys.argv> > 2 else '192.168.6.41'
-        
-        # 1. Connect to the controller PLC
-        print(f"Connecting to Controller PLC: {CONTROL_PLC_IP}...")
-        with LogixDriver(CONTROL_PLC_IP) as controller:
-            get_controller_tags(controller)
+        with LogixDriver(controller_ip) as plc:
+            while True:
+                # 1. Read required tags from the Controller PLC
+                tag_values = {
+                    'START': plc.read('Local:1:I.Data.8').value, # Start push button
+                    'STOP': plc.read('Local:1:I.Data.9').value, # Stop push button
+                    'GREEN': plc.read('Local:1:O.Data.0').value, # Green Light - nominal temperature of SenseHAT IMU
+                    'ORANGE': plc.read('Local:1:O.Data.5').value, # Orange Light - IMU has overheated
+                }
+                print("[PRODUCER] Tags acquired from Controller PLC")
+
+                # 2. Place the tags into the shared buffer
+                buffer.put(tag_values)
+                print(f"[PRODUCER] Tags put into the buffer: {tag_values}")
+                
+                # 3. Log the collected tags
+                
+                
+                # Sleep for a moment, as to not overdue
+                sleep(2)
     except Exception as e:
-        print(f"Communication fault: {e}")
-    except KeyboardInterrupt:
-        print("Closing PLC bridge application...")
+        print(f"[PRODUCER] PLC Connection error: {e}")
 
-"""
-MAIN CONTROL LOOP: read tags from both PLCs and act accordingly
-"""
-def get_controller_tags(controller_plc_ip):
-    while True:
-        # 1. Read tags from the controller plc
-        start_btn_value = controller_conn.read('Local:1:I.Data.8').value
-        stop_btn_value = controller_conn.read('Local:1:I.Data.9').value
-        green_light_value = controller_conn.read('Local:1:O.Data.0').value
-        yellow_light_value = controller_conn.read('Local:1:O.Data.1').value
-        red_light_value = controller_conn.read('Local:1:O.Data.2').value
-        orange_light_value = controller_conn.read('Local:1:O.Data.5').value
+# Consumer: reads tags from the buffer and prints them to the screen
+def robot_tag_writer(buffer, robot_ip):
+    print("[CONSUMER] Reading tags from the buffer...")
+    try:
+        with LogixDriver(robot_ip) as plc:
+            while True:
+                # 1. Read the current tags array from the front of the queue
+                tag_values = buffer.get()
         
-        # 2. Determine states from controller
-        start_button_pressed = start_btn_value
-        stop_button_pressed = not(stop_btn_value)
+                # 2. Check to see if the received item is empty
+                if tag_values == None:
+                    break
         
-        temperature_state = ""
-        if (green_light_value):
-            temperature_state = "NOMINAL"
-        elif (yellow_light_value):
-            temperature_state = "HOT"
-        elif (red_light_value):
-            temperature_state = "CRITICAL"
-        else:
-            temperature_state = "NONE"
-        locked = orange_light_value
+                # 3. Write the tags to the robot arm plc
+                plc.write(
+                        ('6_PLC_Out_6', tag_values['START']),       # Starts/resets robot
+                        ('7_PLC_Out_7', tag_values['STOP']),        # Stops the robot after its currrent cycle
+                        ('11_PLC_Out_11', tag_values['GREEN']),     # Lets the robot know it can go 100% speed
+                        ('12_PLC_Out_12', tag_values['ORANGE']),    # Tells the robot to halt until temperature goes down
+                )
 
-        # 2. Log Controller tags
-        print(f"Start Button Pressed: {start_button_pressed} | Stop Button Pressed: {stop_button_pressed} | Current Temperature State: {temperature_state} | Is System Locked: {locked}")
+                print(f"[CONSUMER] Tag read from the buffer: {tag_values}")
+    except Exception as e:
+        print(f"[CONSUMER] PLC Connection error: {e}")
 
-        
-        
-        time.sleep(1)
+# Main entrypoint: pull environment variables and establish consumer-producer threads and shared memory
+def main():
+    # Get environment variables
+    controller_ip = os.getenv('CONTROLLER_PLC_IP', '192.168.6.32')
+    robot_ip = os.getenv('ROBOT_PLC_IP', '192.168.5.41')
+
+    # Instantiate a shared memory buffer
+    buffer = Queue()
+    
+    # 1. Start the robot plc tag writer (consumer)
+    consumer_thread = Thread(target=robot_tag_writer, args=(buffer, robot_ip, ))
+    consumer_thread.start()
+    
+    # 2. Start controller plc tag reader (producer)
+    producer_thread = Thread(target=controller_tag_reader, args=(buffer, controller_ip, ))
+    producer_thread.start()
+
+    # 3. Wait for both threads to finish
+    consumer_thread.join()
+    producer_thread.join()
 
 if __name__ == "__main__":
     main()
