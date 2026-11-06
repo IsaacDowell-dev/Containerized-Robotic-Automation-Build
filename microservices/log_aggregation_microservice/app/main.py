@@ -1,6 +1,4 @@
 from fastapi import FastAPI
-import requests
-import logging
 from types import TemperatureLog
 
 app = FastAPI()
