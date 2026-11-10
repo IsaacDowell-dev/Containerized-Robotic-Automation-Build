@@ -4,6 +4,7 @@ from enum import Enum
 from datetime import datetime, UTC
 from typing import List
 import asyncio
+from contextlib import asynccontextmanager
 
 """ Return the current UTC datetime"""
 def utc_now() -> datetime:
@@ -40,7 +41,13 @@ async def get_buffer() -> asyncio.Queue:
         log_buffer = asyncio.Queue(maxsize=100000)
     return log_buffer
 
-app = FastAPI(title="Log Ingestion API")
+@asynccontextmanager
+def lifespan(app: FastAPI):
+    # Gain access to the buffer
+    buffer = await get_buffer()
+    yield
+
+app = FastAPI(title="Log Ingestion API", lifespan=lifespan)
 
 """ Logging endpoint for fast, low-volume logging"""
 @app.post("/logging-ingest")
