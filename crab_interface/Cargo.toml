@@ -8,6 +8,7 @@ rand = "0.10.3"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_plot = "0.38.0"
-reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+reqwest = { version = "0.13.5", features = ["blocking", "json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
-egui_extras = "0.37.0"
+queue = "0.3.2-final"
+egui_graphs = "0.32.0"

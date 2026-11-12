@@ -26,7 +26,7 @@ struct AppState{
 #[derive(Deserialize)]
 struct LogQuery {
     limit: Option<usize>,
-    start: u64,
+    start: Option<u64>,
 }
 
 fn read_logs(limit: usize, start: u64) -> io::Result<Vec<String>>{
@@ -104,7 +104,7 @@ async fn get_logs (
     ) -> Result<Json<Vec<String>>, (StatusCode, String)>{
 
     let limit = query.limit.unwrap_or(100);
-    let start = query.start;
+    let start = query.start.unwrap_or(0);
 
     let logs = tokio::task::spawn_blocking(move || {
         read_logs(limit, start)

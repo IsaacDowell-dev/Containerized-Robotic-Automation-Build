@@ -1,235 +1,414 @@
-use eframe::egui::{Vec2b};
-use egui_extras::{TableBuilder, Column};
-use egui_plot;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
-use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::time::Duration;
-use std::thread;
+use egui::Ui;
+use eframe::egui;
+use egui_plot::{Line, Plot, PlotPoints};
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
-mod api_call;
-use api_call::{get_metrics};
+// --------------------------------------------------
+// Configuration
+// --------------------------------------------------
 
-struct Metric
-{
+const MAX_TEMPERATURE_POINTS: usize = 100;
+
+// --------------------------------------------------
+// Temperature Graph
+// --------------------------------------------------
+
+struct GraphFrame {
     name: String,
-    file: File,
-    points: Vec<[f64; 2]>,
-    pending: String,
-    error: Option<String>
+    points: VecDeque<[f64; 2]>,
 }
 
-impl Metric{
-    fn new(name: String, filename: &str) -> std::io::Result<Self>{
-        let path = PathBuf::from(filename);
-        let mut file = File::open(path)?;
-
-        file.seek(SeekFrom::Start(0))?;
-
-        Ok(Self{
-            name,
-            file,
-            points: Vec::new(),
-            pending: String::new(),
-            error: None 
-        })
+impl GraphFrame {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            points: VecDeque::new(),
+        }
     }
 
-    fn read_new_data(&mut self){
-        let mut buffer = [0u8, 255];
+    fn write_new(&mut self, x: f64, y: f64) {
+        if self.points.len() >= MAX_TEMPERATURE_POINTS {
+            self.points.pop_front();
+        }
 
-        loop{
-            match self.file.read(&mut buffer){
-                Ok(0) => break,
-                Ok(n) => {
-                    let text = String::from_utf8_lossy(&buffer[..n]);
-                    self.pending.push_str(&text);
+        self.points.push_back([x, y]);
+    }
 
-                    while let Some(pos) = self.pending.find('\n'){
-                        let line: String = self.pending.drain(..=pos).collect();
-                        let line = line.trim();
+    fn show(&self, ui: &mut egui::Ui) {
+        ui.heading(&self.name);
 
-                        if line.is_empty() {continue;}
+        let points: PlotPoints<'_> =
+            self.points.iter().copied().collect();
 
-                        if self.points.len() > 100 {
-                            self.points.remove(0);
-                        }
+        Plot::new("temperature_plot")
+            .height(230.0)
+            .x_axis_label("Time (seconds)")
+            .y_axis_label("Temperature (°C)")
+            .allow_zoom(true)
+            .allow_drag(true)
+            .show(ui, |plot_ui| {
+                plot_ui.line(
+                    Line::new("Temperature", points)
+                        .width(2.0),
+                );
+            });
+    }
+}
 
-                        let mut values = line.split(',');
+// --------------------------------------------------
+// Status Button
+// --------------------------------------------------
 
-                        let x = values
-                            .next()
-                            .and_then(|s| s.trim().parse::<f64>().ok());
+struct StatusFrame {
+    name: String,
+    state: bool,
+    counter: u64,
+}
 
-                        let y = values
-                            .next()
-                            .and_then(|s| s.trim().parse::<f64>().ok());
+impl StatusFrame {
+    fn new(name: &str, state: bool) -> Self {
+        Self {
+            name: name.to_owned(),
+            state,
+            counter: 0,
+        }
+    }
 
-                        if let (Some(x), Some(y)) = (x, y){
-                            if x.is_finite() && y.is_finite() {
-                                self.points.push([x, y]);
+    fn set_state(&mut self, state: bool) {
+        self.state = state;
+    }
+
+    fn toggle_state(&mut self) {
+        self.state = !self.state;
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) {
+        let fill_color = if self.state {
+            egui::Color32::from_rgb(30, 150, 30)
+        } else {
+            egui::Color32::from_rgb(150, 30, 30)
+        };
+
+        let label = if self.state {
+            "ONLINE"
+        } else {
+            "OFFLINE"
+        };
+
+        let button = egui::Button::new(
+            egui::RichText::new(
+                format!("{}\n{}", self.name, label)
+            )
+            .color(egui::Color32::WHITE)
+            .strong()
+        )
+        .fill(fill_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::WHITE,
+        ));
+
+        if ui.add_sized([140.0, 85.0], button).clicked() {
+            self.toggle_state();
+        }
+    }
+}
+
+// --------------------------------------------------
+// Log Entries
+// --------------------------------------------------
+
+struct LogEntry {
+    timestamp: String,
+    status: String,
+    source: String,
+    body: String,
+    host_ip: String,
+}
+
+impl LogEntry {
+    fn new(
+        timestamp: &str,
+        status: &str,
+        source: &str,
+        body: &str,
+        host_ip: &str,
+    ) -> Self {
+        Self {
+            timestamp: timestamp.to_owned(),
+            status: status.to_owned(),
+            source: source.to_owned(),
+            body: body.to_owned(),
+            host_ip: host_ip.to_owned(),
+        }
+    }
+
+    // Parses:
+    // timestamp, status, source, body, host_ip
+    //
+    // The body may contain additional commas.
+    fn from_csv(line: &str) -> Option<Self> {
+        let mut parts = line.splitn(4, ',');
+
+        let timestamp = parts.next()?.trim();
+        let status = parts.next()?.trim();
+        let source = parts.next()?.trim();
+        let remainder = parts.next()?;
+
+        let (body, host_ip) = remainder.rsplit_once(',')?;
+
+        Some(Self::new(
+            timestamp,
+            status,
+            source,
+            body.trim(),
+            host_ip.trim(),
+        ))
+    }
+}
+
+// --------------------------------------------------
+// Main Application
+// --------------------------------------------------
+
+struct CrabGUI {
+    name: String,
+
+    // Status buttons
+    statuses: Vec<StatusFrame>,
+
+    // Temperature graph
+    temperature: GraphFrame,
+    start_time: Instant,
+    last_sample: Instant,
+
+    // Logs
+    logs: VecDeque<LogEntry>,
+}
+
+impl Default for CrabGUI {
+    fn default() -> Self {
+        let now = Instant::now();
+
+        let mut app = Self {
+            name: "CRAB: Containerized Robotic Automation Build"
+                .to_owned(),
+
+            statuses: vec![
+                StatusFrame::new("HAT", false),
+                StatusFrame::new("NAS", false),
+                StatusFrame::new("HMI", false),
+                StatusFrame::new("PLC", false),
+            ],
+
+            temperature: GraphFrame::new("Temperature"),
+            start_time: now,
+            last_sample: now,
+
+            logs: VecDeque::new(),
+        };
+
+        // Example log entries
+        app.add_log(LogEntry::new(
+            "2026-11-12 10:00:00",
+            "INFO",
+            "CRAB",
+            "Application started",
+            "127.0.0.1",
+        ));
+
+        app.add_log(LogEntry::new(
+            "2026-11-12 10:00:01",
+            "INFO",
+            "PLC",
+            "PLC connection initialized",
+            "192.168.1.100",
+        ));
+
+        app.add_log(LogEntry::new(
+            "2026-11-12 10:00:02",
+            "WARN",
+            "HMI",
+            "Waiting for device response",
+            "192.168.1.101",
+        ));
+
+        app
+    }
+}
+
+impl CrabGUI {
+    fn add_log(&mut self, entry: LogEntry) {
+        self.logs.push_back(entry);
+
+        // Prevent unlimited log growth.
+        if self.logs.len() > 500 {
+            self.logs.pop_front();
+        }
+    }
+
+    fn update_temperature(&mut self) {
+        let now = Instant::now();
+
+        if now.duration_since(self.last_sample)
+            >= Duration::from_secs(1)
+        {
+            self.last_sample = now;
+
+            let elapsed = now
+                .duration_since(self.start_time)
+                .as_secs_f64();
+
+            // Placeholder temperature data.
+            // Replace this with actual sensor readings.
+            let temperature =
+                65.0 + (elapsed * 0.5).sin() * 5.0;
+
+            self.temperature.write_new(
+                elapsed,
+                temperature,
+            );
+        }
+    }
+
+    fn show_header(&self, ui: &mut egui::Ui) {
+        ui.heading(&self.name);
+        ui.separator();
+    }
+
+    fn show_dashboard(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_top(|ui| {
+
+            // Top left: Temperature graph
+            ui.vertical(|ui| {
+                self.temperature.show(ui);
+            });
+
+            ui.separator();
+
+            // Top right: Status buttons
+            ui.vertical(|ui| {
+                ui.heading("System Status");
+
+                egui::Grid::new("status_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 8.0])
+                    .show(ui, |ui| {
+                        for (index, status) in
+                            self.statuses.iter_mut().enumerate()
+                        {
+                            status.show(ui);
+
+                            if index % 2 == 1 {
+                                ui.end_row();
                             }
                         }
-                    }
-                }
-                Err(e) => {
-                    self.error = Some(e.to_string());
-                    break;
-                }
-            }
-        }        
+                    });
+            });
+        });
+    }
+
+    fn show_logs(&mut self, ui: &mut egui::Ui) {
+        ui.heading("System Logs");
+
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .max_height(250.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+
+                egui::Grid::new("log_table")
+                    .striped(true)
+                    .min_col_width(80.0)
+                    .show(ui, |ui| {
+
+                        // Table headers
+                        ui.strong("Timestamp");
+                        ui.strong("Status");
+                        ui.strong("Source");
+                        ui.strong("Log Body");
+                        ui.strong("Host IP");
+
+                        ui.end_row();
+
+                        for log in &self.logs {
+                            let status_color =
+                                match log.status.as_str() {
+                                    "ERROR" => egui::Color32::RED,
+                                    "WARN" => egui::Color32::YELLOW,
+                                    "INFO" => egui::Color32::GREEN,
+                                    _ => egui::Color32::WHITE,
+                                };
+
+                            ui.label(&log.timestamp);
+
+                            ui.colored_label(
+                                status_color,
+                                &log.status,
+                            );
+
+                            ui.label(&log.source);
+
+                            ui.label(&log.body);
+
+                            ui.label(&log.host_ip);
+
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 }
 
-struct Graph
-{
-    metrics: Vec<Metric>,
-}
-
-impl Graph{
-    fn new(metrics: Vec<Metric>) -> std::io::Result<Self>{
-        Ok(Self{
-            metrics,
-        })
-    }
-}
-
-impl eframe::App for Graph{
-    fn logic(
+impl eframe::App for CrabGUI {
+    fn ui(
         &mut self,
-        ctx: &egui::Context,
-        _frame: &mut eframe::Frame
-    ){
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    }
+        ctx: &mut Ui,
+        _frame: &mut eframe::Frame,
+    ) {
+        self.update_temperature();
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame){
-        for metric in self.metrics.iter_mut(){
-            metric.read_new_data();
-        }
-    
-        egui_plot::Plot::new("live_plot")
-            .width(800.0)
-            .height(400.0)
-            .allow_zoom(Vec2b::new(false, false))
-            .allow_scroll(Vec2b::new(false, false))
-            .default_y_bounds(45.0, 85.0)
-            .show(ui, |plot_ui|{
-                for metric in &self.metrics{
-                    let points: egui_plot::PlotPoints<'_> =
-                        metric.points.iter().copied().collect();
-                
-                    let line = egui_plot::Line::new(
-                        &metric.name,
-                        points
-                    );
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.show_header(ui);
 
-                    plot_ui.line(line);
-                }
-            });
+            // Top section
+            self.show_dashboard(ui);
 
-        // let col_count = 2;
+            ui.add_space(15.0);
+            ui.separator();
 
-        TableBuilder::new(ui)
-            .column(Column::auto().resizable(true))
-            .column(Column::auto().resizable(true))
-            .column(Column::auto().resizable(true))
-            .header(30.0, |mut header| {
-                header.col(|ui| {
-                    ui.heading("Timestamp");
-                });
-                header.col(|ui|{
-                    ui.heading("State");
-                });
-                header.col(|ui| {
-                    ui.heading("Source");
-                });
-            })
-            .body(|mut body| {
-                body.row(30.0, |mut row| {
-                    row.col(|ui| {
-                        ui.label("Hello,");
-                    });
-                    row.col(|ui| {
-                        ui.label("World!");
-                    });
-                    row.col(|ui| {
-                        ui.label("World!");
-                    });
-                })
-            });
+            // Bottom section
+            self.show_logs(ui);
+        });
+
+        // Keep the application refreshing.
+        ctx.request_repaint_after(
+            Duration::from_millis(100),
+        );
     }
 }
 
-fn write_new_data(){
-
-     match get_metrics() {
-        Ok(metrics) => {
-            let mut file = OpenOptions::new()
-                .append(true)
-                .open("temperature.txt")
-                .expect("Failed to open data.txt");
-
-            writeln!(file, "{},{}", metrics.temperature.x, metrics.temperature.y)
-                .expect("Failed to write to temperature.txt");
-
-            file = OpenOptions::new()
-                .append(true)
-                .open("speed.txt")
-                .expect("Failed to open speed.txt");
-
-            writeln!(file, "{},{}", metrics.speed.x, metrics.speed.y)
-                .expect("Failed to write to temperature.txt");
-        }
-        Err(e) => {
-            eprintln!("Failed to retrieve metrics: {e}");
-        }
-    }
-}
-
-fn clear_data() -> std::io::Result<()> {
-    fs::write("temperature.txt", "")?;
-    fs::write("speed.txt", "")?;
-    Ok(())
-}
+// --------------------------------------------------
+// Main
+// --------------------------------------------------
 
 fn main() -> eframe::Result<()> {
-    clear_data().expect("Failed to clear data");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1200.0, 800.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_title("CRAB Dashboard"),
 
-    let temperature_name = String::from("temperature");
-    let temperature_filename = "temperature.txt";
-    let temperature  = Metric::new(
-        temperature_name,
-        temperature_filename
-    ).unwrap();
-
-    let speed_name = String::from("speed");
-    let speed_filename = "speed.txt";
-    let speed  = Metric::new(
-        speed_name,
-        speed_filename
-    ).unwrap();
-
-    thread::spawn(move || {
-        loop{
-            thread::sleep(Duration::from_millis(100));
-            write_new_data();
-        }
-    });
-
-    let mut metrics: Vec<Metric> = Vec::new();
-    metrics.push(temperature);
-    metrics.push(speed);
-
-    let app = Graph::new(metrics)
-        .expect("Failed to make Graph::new");
+        ..Default::default()
+    };
 
     eframe::run_native(
-        "Live Graph",
-        eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(app))),
+        "CRAB Dashboard",
+        options,
+        Box::new(|_cc| {
+            Ok(Box::new(CrabGUI::default()))
+        }),
     )
 }
