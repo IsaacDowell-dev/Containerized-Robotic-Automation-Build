@@ -7,7 +7,7 @@ from ingestion import app as ingestion_app, get_buffer
 from processor import BatchProcessor, ProcessorConfig
 from query import router as query_router
 
-# Processor instance
+# Singelton processor instance
 processor: BatchProcessor = None
 
 """ Manage the application lifecycle """
@@ -21,6 +21,8 @@ async def lifespan(app: FastAPI):
         batch_size=1000,
         flush_interval=5.0,
     )
+
+    # Establish the database engine and start a session
 
     processor = BatchProcessor(buffer, config)
 

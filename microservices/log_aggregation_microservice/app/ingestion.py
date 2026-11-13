@@ -1,57 +1,31 @@
 from fastapi import FastAPI, Request, HTTPException
-from pydantic import BaseModel, Field
-from enum import Enum
 from datetime import datetime, UTC
 from typing import List
 import asyncio
-from contextlib import asynccontextmanager
+
+from models import Log # SQLModel log standard object format
 
 """ Return the current UTC datetime"""
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
-""" Enumerator for each kind of log level that can be thrown"""
-class LogLevel(str, Enum):
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
-
-""" Normalized log entry format for all services"""
-class LogEntry(BaseModel):
-    timestamp: datetime = Field(default_factory=utc_now)
-    level: LogLevel = LogLevel.INFO
-    service: str    # name of the service that uploaded the log
-    log_body: str   # main content of the log
-    host: str
-
-""" Batch of normalized logs"""
-class LogBatch(BaseModel):
-    logs: List[LogEntry]
-
 """ Singleton buffer to store incoming logs for batch uploads to the DB"""
-log_buffer: asyncio.Queue = None
+buffer: asyncio.Queue = None
 
 """ Access method for the buffer singleton"""
 async def get_buffer() -> asyncio.Queue:
-    global log_buffer
+    global buffer
+
     # Create buffer if not instantiated
-    if log_buffer is None:
-        log_buffer = asyncio.Queue(maxsize=100000)
-    return log_buffer
+    if buffer is None:
+        buffer = asyncio.Queue(maxsize=100000)
+    return buffer
 
-@asynccontextmanager
-def lifespan(app: FastAPI):
-    # Gain access to the buffer
-    buffer = await get_buffer()
-    yield
-
-app = FastAPI(title="Log Ingestion API", lifespan=lifespan)
+app = FastAPI(title="Log Ingestion API")
 
 """ Logging endpoint for fast, low-volume logging"""
 @app.post("/logging-ingest")
-async def ingest_single_log(log: LogEntry, request: Request): 
+async def ingest_single_log(log: Log, request: Request): 
     # 1. Acquire the buffer
     buffer = await get_buffer()
 
@@ -65,7 +39,7 @@ async def ingest_single_log(log: LogEntry, request: Request):
 
 """ Logging endpoint for ingesting a batch of logs"""
 @app.post("/logging-ingest/batch")
-async def ingest_batch_logs(batch: LogBatch, request: Request):
+async def ingest_batch_logs(batch: List[Log], request: Request):
     # 1. Acquire the buffer
     buffer = await get_buffer()
     accepted = 0
