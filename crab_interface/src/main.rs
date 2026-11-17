@@ -1,414 +1,193 @@
-use egui::Ui;
 use eframe::egui;
-use egui_plot::{Line, Plot, PlotPoints};
-use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use egui_extras::{Column, TableBuilder};
+use egui_plot::{Plot, Line, PlotPoints};
+use tokio;
 
-// --------------------------------------------------
-// Configuration
-// --------------------------------------------------
+use serde_json;
 
-const MAX_TEMPERATURE_POINTS: usize = 100;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::Duration;
 
-// --------------------------------------------------
-// Temperature Graph
-// --------------------------------------------------
+mod plc_comm;
+use plc_comm::{read_plc_tags};
 
-struct GraphFrame {
-    name: String,
-    points: VecDeque<[f64; 2]>,
+#[tokio::main]
+async fn main() {
+    read_plc_tags();
+
+    let native_options = eframe::NativeOptions::default();
+    
+    eframe::run_native("My egui App", native_options, Box::new(|cc| Ok(Box::new(MyEguiApp::new(cc)))))
+        .expect("Failed to launch eframe");
 }
 
-impl GraphFrame {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-            points: VecDeque::new(),
-        }
-    }
-
-    fn write_new(&mut self, x: f64, y: f64) {
-        if self.points.len() >= MAX_TEMPERATURE_POINTS {
-            self.points.pop_front();
-        }
-
-        self.points.push_back([x, y]);
-    }
-
-    fn show(&self, ui: &mut egui::Ui) {
-        ui.heading(&self.name);
-
-        let points: PlotPoints<'_> =
-            self.points.iter().copied().collect();
-
-        Plot::new("temperature_plot")
-            .height(230.0)
-            .x_axis_label("Time (seconds)")
-            .y_axis_label("Temperature (°C)")
-            .allow_zoom(true)
-            .allow_drag(true)
-            .show(ui, |plot_ui| {
-                plot_ui.line(
-                    Line::new("Temperature", points)
-                        .width(2.0),
-                );
-            });
-    }
+enum PlcUpdate {
+    Status { device: String, online: bool },
+    Temperature(f64),
 }
 
-// --------------------------------------------------
-// Status Button
-// --------------------------------------------------
-
-struct StatusFrame {
-    name: String,
-    state: bool,
-    counter: u64,
+// #[derive(Default)]
+struct MyEguiApp {
+    hmi_online: bool,
+    hat_online: bool,
+    nas_online: bool,
+    plc_online: bool,
+    temperature: f64,
+    update_reciever: Receiver<PlcUpdate>,
 }
 
-impl StatusFrame {
-    fn new(name: &str, state: bool) -> Self {
-        Self {
-            name: name.to_owned(),
-            state,
-            counter: 0,
-        }
-    }
+impl MyEguiApp {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let (sender, reciever) = std::sync::mpsc::channel();
+        let ctx = cc.egui_ctx.clone();
 
-    fn set_state(&mut self, state: bool) {
-        self.state = state;
-    }
-
-    fn toggle_state(&mut self) {
-        self.state = !self.state;
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
-        let fill_color = if self.state {
-            egui::Color32::from_rgb(30, 150, 30)
-        } else {
-            egui::Color32::from_rgb(150, 30, 30)
-        };
-
-        let label = if self.state {
-            "ONLINE"
-        } else {
-            "OFFLINE"
-        };
-
-        let button = egui::Button::new(
-            egui::RichText::new(
-                format!("{}\n{}", self.name, label)
-            )
-            .color(egui::Color32::WHITE)
-            .strong()
-        )
-        .fill(fill_color)
-        .stroke(egui::Stroke::new(
-            1.0,
-            egui::Color32::WHITE,
-        ));
-
-        if ui.add_sized([140.0, 85.0], button).clicked() {
-            self.toggle_state();
-        }
-    }
-}
-
-// --------------------------------------------------
-// Log Entries
-// --------------------------------------------------
-
-struct LogEntry {
-    timestamp: String,
-    status: String,
-    source: String,
-    body: String,
-    host_ip: String,
-}
-
-impl LogEntry {
-    fn new(
-        timestamp: &str,
-        status: &str,
-        source: &str,
-        body: &str,
-        host_ip: &str,
-    ) -> Self {
-        Self {
-            timestamp: timestamp.to_owned(),
-            status: status.to_owned(),
-            source: source.to_owned(),
-            body: body.to_owned(),
-            host_ip: host_ip.to_owned(),
-        }
-    }
-
-    // Parses:
-    // timestamp, status, source, body, host_ip
-    //
-    // The body may contain additional commas.
-    fn from_csv(line: &str) -> Option<Self> {
-        let mut parts = line.splitn(4, ',');
-
-        let timestamp = parts.next()?.trim();
-        let status = parts.next()?.trim();
-        let source = parts.next()?.trim();
-        let remainder = parts.next()?;
-
-        let (body, host_ip) = remainder.rsplit_once(',')?;
-
-        Some(Self::new(
-            timestamp,
-            status,
-            source,
-            body.trim(),
-            host_ip.trim(),
-        ))
-    }
-}
-
-// --------------------------------------------------
-// Main Application
-// --------------------------------------------------
-
-struct CrabGUI {
-    name: String,
-
-    // Status buttons
-    statuses: Vec<StatusFrame>,
-
-    // Temperature graph
-    temperature: GraphFrame,
-    start_time: Instant,
-    last_sample: Instant,
-
-    // Logs
-    logs: VecDeque<LogEntry>,
-}
-
-impl Default for CrabGUI {
-    fn default() -> Self {
-        let now = Instant::now();
-
-        let mut app = Self {
-            name: "CRAB: Containerized Robotic Automation Build"
-                .to_owned(),
-
-            statuses: vec![
-                StatusFrame::new("HAT", false),
-                StatusFrame::new("NAS", false),
-                StatusFrame::new("HMI", false),
-                StatusFrame::new("PLC", false),
-            ],
-
-            temperature: GraphFrame::new("Temperature"),
-            start_time: now,
-            last_sample: now,
-
-            logs: VecDeque::new(),
-        };
-
-        // Example log entries
-        app.add_log(LogEntry::new(
-            "2026-11-12 10:00:00",
-            "INFO",
-            "CRAB",
-            "Application started",
-            "127.0.0.1",
-        ));
-
-        app.add_log(LogEntry::new(
-            "2026-11-12 10:00:01",
-            "INFO",
-            "PLC",
-            "PLC connection initialized",
-            "192.168.1.100",
-        ));
-
-        app.add_log(LogEntry::new(
-            "2026-11-12 10:00:02",
-            "WARN",
-            "HMI",
-            "Waiting for device response",
-            "192.168.1.101",
-        ));
-
-        app
-    }
-}
-
-impl CrabGUI {
-    fn add_log(&mut self, entry: LogEntry) {
-        self.logs.push_back(entry);
-
-        // Prevent unlimited log growth.
-        if self.logs.len() > 500 {
-            self.logs.pop_front();
-        }
-    }
-
-    fn update_temperature(&mut self) {
-        let now = Instant::now();
-
-        if now.duration_since(self.last_sample)
-            >= Duration::from_secs(1)
-        {
-            self.last_sample = now;
-
-            let elapsed = now
-                .duration_since(self.start_time)
-                .as_secs_f64();
-
-            // Placeholder temperature data.
-            // Replace this with actual sensor readings.
-            let temperature =
-                65.0 + (elapsed * 0.5).sin() * 5.0;
-
-            self.temperature.write_new(
-                elapsed,
-                temperature,
-            );
-        }
-    }
-
-    fn show_header(&self, ui: &mut egui::Ui) {
-        ui.heading(&self.name);
-        ui.separator();
-    }
-
-    fn show_dashboard(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_top(|ui| {
-
-            // Top left: Temperature graph
-            ui.vertical(|ui| {
-                self.temperature.show(ui);
-            });
-
-            ui.separator();
-
-            // Top right: Status buttons
-            ui.vertical(|ui| {
-                ui.heading("System Status");
-
-                egui::Grid::new("status_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 8.0])
-                    .show(ui, |ui| {
-                        for (index, status) in
-                            self.statuses.iter_mut().enumerate()
-                        {
-                            status.show(ui);
-
-                            if index % 2 == 1 {
-                                ui.end_row();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let client = reqwest::Client::new();
+                loop {
+                    if let Ok(resp) = client
+                        .get("127.0.0.1")
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        
+                            if let Some(hmi) = data["hmi"].as_bool() {
+                                let _ = sender.send(PlcUpdate::Status { device: "HMI".into(), online: hmi});
+                            } else {
+                                println!("Error: Failed to find field 'hmi' in response from 'url'");
                             }
                         }
-                    });
-            });
-        });
-    }
+                    }
 
-    fn show_logs(&mut self, ui: &mut egui::Ui) {
-        ui.heading("System Logs");
-
-        ui.separator();
-
-        egui::ScrollArea::vertical()
-            .max_height(250.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-
-                egui::Grid::new("log_table")
-                    .striped(true)
-                    .min_col_width(80.0)
-                    .show(ui, |ui| {
-
-                        // Table headers
-                        ui.strong("Timestamp");
-                        ui.strong("Status");
-                        ui.strong("Source");
-                        ui.strong("Log Body");
-                        ui.strong("Host IP");
-
-                        ui.end_row();
-
-                        for log in &self.logs {
-                            let status_color =
-                                match log.status.as_str() {
-                                    "ERROR" => egui::Color32::RED,
-                                    "WARN" => egui::Color32::YELLOW,
-                                    "INFO" => egui::Color32::GREEN,
-                                    _ => egui::Color32::WHITE,
-                                };
-
-                            ui.label(&log.timestamp);
-
-                            ui.colored_label(
-                                status_color,
-                                &log.status,
-                            );
-
-                            ui.label(&log.source);
-
-                            ui.label(&log.body);
-
-                            ui.label(&log.host_ip);
-
-                            ui.end_row();
+                    if let Ok(resp) = client
+                        .get("127.0.0.1")
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        
+                            if let Some(rpi) = data["rpi"].as_bool() {
+                                let _ = sender.send(PlcUpdate::Status { device: "RPI".into(), online: rpi});
+                            } else {
+                                println!("Error: Failed to find field 'rpi' in response from 'url'");
+                            }
                         }
-                    });
+                    }
+
+                    if let Ok(resp) = client
+                        .get("127.0.0.1")
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        
+                            if let Some(nas) = data["nas"].as_bool() {
+                                let _ = sender.send(PlcUpdate::Status { device: "NAS".into(), online: nas});
+                            } else {
+                                println!("Error: Failed to find field 'nas' in response from 'url'");
+                            }
+                        }
+                    }
+
+                    if let Ok(resp) = client
+                        .get("127.0.0.1")
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        
+                            if let Some(plc) = data["plc"].as_bool() {
+                                let _ = sender.send(PlcUpdate::Status { device: "PLC".into(), online: plc});
+                            } else {
+                                println!("Error: Failed to find field 'plc' in response from 'url'");
+                            }
+                        }
+                    }
+
+                    ctx.request_repaint();
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
             });
-    }
-}
-
-impl eframe::App for CrabGUI {
-    fn ui(
-        &mut self,
-        ctx: &mut Ui,
-        _frame: &mut eframe::Frame,
-    ) {
-        self.update_temperature();
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_header(ui);
-
-            // Top section
-            self.show_dashboard(ui);
-
-            ui.add_space(15.0);
-            ui.separator();
-
-            // Bottom section
-            self.show_logs(ui);
         });
 
-        // Keep the application refreshing.
-        ctx.request_repaint_after(
-            Duration::from_millis(100),
-        );
+        Self {
+            hmi_online: false,
+            hat_online: false,
+            nas_online: false,
+            plc_online: false,
+            temperature: 0.0,
+            update_reciever: reciever,
+        }
     }
 }
 
-// --------------------------------------------------
-// Main
-// --------------------------------------------------
+fn status_box(ui: &mut egui::Ui, label: &str, status: bool) -> egui::Response {
+    let color = if status {egui::Color32::from_rgb(30, 150, 30)}
+                else      {egui::Color32::from_rgb(150, 30, 30)};
+    
+    egui::Frame::new()
+        .fill(color)
+        .corner_radius(10)
+        .inner_margin(50)
+        .show(ui, |ui| {
+            ui.heading(
+                egui::RichText::new(label)
+                    .color(egui::Color32::from_rgb(255, 255, 255))
+                    .size(40.0)
+            );
+    }).response
+}
 
-fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_title("CRAB Dashboard"),
+impl eframe::App for MyEguiApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        loop {
+            match self.update_reciever.try_recv() {
+                Ok(PlcUpdate::Status { device, online }) => match device.as_str() {
+                    "HMI" => self.hmi_online = online,
+                    "HAT" => self.hat_online = online,
+                    "NAS" => self.nas_online = online,
+                    "PLC" => self.plc_online = online,
+                    _ => {}
+                },
+                Ok(PlcUpdate::Temperature(t)) => self.temperature = t,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
 
-        ..Default::default()
-    };
+        let sin: PlotPoints = (0..1000)
+            .map(|i| {
+                let x = i as f64 * 0.01;
+                [x, x.sin()]
+            })
+            .collect();
+        let line = Line::new("sin", sin);
 
-    eframe::run_native(
-        "CRAB Dashboard",
-        options,
-        Box::new(|_cc| {
-            Ok(Box::new(CrabGUI::default()))
-        }),
-    )
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    status_box(ui, "HMI", self.hmi_online);
+                    status_box(ui, "HAT", self.hat_online);
+                });
+                ui.horizontal(|ui| {
+                    status_box(ui, "NAS", self.nas_online);
+                    status_box(ui, "PLC", self.plc_online);
+                });
+                
+                Plot::new("my_plot")
+                    .view_aspect(2.0)
+                    .width(600.0)
+                    .height(300.0)
+                    .show(ui, |plot_ui| plot_ui.line(line));
+
+                ui.label(format!("Temperature: {:.1} °C", self.temperature));
+            });
+        });
+   }
 }
