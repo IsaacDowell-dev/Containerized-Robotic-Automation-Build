@@ -3,8 +3,9 @@ from typing import List
 from datetime import datetime, UTC
 from dataclasses import dataclass
 
-from models import Log
-from database_api import SessionDep
+from app.db.session import SessionDep 
+
+from app.models.log import Log
 
 """ Configuration variables for the batch processor """
 @dataclass
@@ -14,12 +15,11 @@ class ProcessorConfig:
 
 """ Processes logs from the buffer in batches """
 class BatchProcessor:
-    def __init__(self, buffer: asyncio.Queue, config: ProcessorConfig, session: SessionDep):
+    def __init__(self, buffer: asyncio.Queue, config: ProcessorConfig):
         self.buffer = buffer
         self.config = config
         self.current_batch: List[Log] = []
         self.last_flush = datetime.now(UTC)
-        self.session = session
         self._running = False
 
     """ Start the batch processor """
@@ -72,7 +72,7 @@ class BatchProcessor:
                 await self._flush_batch()
 
     """ Write current batches to the MariaDB database """
-    async def _flush_batch(self):
+    async def _flush_batch(self, session: SessionDep):
         if not self.current_batch:
             return
         print("[LOG AGG] Flushing current batch of logs...")
@@ -83,9 +83,9 @@ class BatchProcessor:
         self.last_flush = datetime.now(UTC)
 
         # Add all logs to the database session
-        self.session.add_all(batch)
+        await session.add_all(batch)
     
         # Upload the batch of logs to the database
-        self.session.commit()
+        await session.commit()
 
         print(f"Flushed {len(batch)} logs to the database.")

@@ -1,70 +1,32 @@
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
-from typing import List, Optional, Annotated
-from datetime import datetime
+from typing import List, Annotated
 from sqlmodel import select, col
 
-from database_api import SessionDep
-from models import Log
+from app.models.log import Log, LogQuery, LogQueryResult
+from app.db.session import SessionDep
 
+""" Router endpoint for these functions """ 
 router = APIRouter(prefix="/query", tags=["Query"])
 
-""" Query parameters for log searching """
-class LogQuery(BaseModel):
-    source: Optional[str] = None
-    status: Optional[str] = None
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    search: Optional[str] = None # text search in the log message
-    id: Optional[str] = None
-    limit: int = 100
-    offset: int = 0
-
-""" Server result from fetching logs """
-class LogQueryResult(BaseModel):
-    logs: List[Log]
-    total: int
-    has_more: bool
-
-""" Search logs with flexible filtering """
-@router.get("/search")
-async def search_logs(
-    session: SessionDep,
-    query: LogQuery,
-) -> List[Log]:
-    # Query thed MariaDB table for relevant log entries
-    logs = await get_relevant_logs(query)
-    
-    # Sort logs by timestamp descending (newest first)
-    logs.sort(key=lambda x: x.timestamp, reverse=True)
-
-    # Apply pagination
-    total = len(logs)
-    paginated = logs[query.offset:query.offset + query.limit]
-
-    return LogQueryResult(
-        logs=paginated,
-        total=total,
-        has_more=(query.offset + query.limit) < total
-    )
-
-""" Retrieve all logs in the table """
+""" Retrieve limit number logs in the table """
 @router.get("/logs/")
 async def read_logs(
     session: SessionDep,
     offset: int = 0,
     limit: Annotated[int, Query(le=100)] = 100,
 ) -> List[Log]:
-    logs = session.exec(
+    # Execute a select query for all logs in the table
+    logs = await session.exec(
         select(Log).offset(offset).limit(limit)
     ).all()
+
     return logs
 
 """ Retrieve logs with specific filters """
 @router.post("/logs/filter")
-async def filter_logs(query: LogQuery) -> LogQueryResult:
+async def filter_logs(session: SessionDep, query: LogQuery) -> LogQueryResult:
     # Get a filtered list of logs from the database
-    logs = await get_relevant_logs(query)
+    logs = await get_relevant_logs(session, query)
 
     # Sort logs by timestamp
     logs.sort(key=lambda x: x.recorded_at, reverse=True)
@@ -105,5 +67,5 @@ async def get_relevant_logs(
     if query.search is not None:
         statement = statement.where(col(Log.log_body).contains(query.search))
     
-    logs = session.exec(statement)
+    logs = await session.exec(statement)
     return sorted(logs, reverse=True)

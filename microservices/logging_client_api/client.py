@@ -1,8 +1,7 @@
 # Client library for sending logs to the aggregation service
 import requests
-from typing import Optional
-from datetime import datetime, UTC
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 import queue
 import threading
@@ -40,19 +39,13 @@ class LogAggregationClient:
         atexit.register(self.close)
     
     """ Log a message; queues the log for sending and is non-blocking """
-    def log(
-        self,
-        timestamp: datetime,
-        level: LogLevel,
-        message: str,
-        **attributes
-    ):
+    def log(self, recorded_at: str, status: LogLevel, log_body: str, host_ip: str):
         entry = {
-            "timestamp": timestamp,
-            "level": level.value,
+            "recorded_at": recorded_at,
+            "status": status.value,
             "service": self.config.service_name,
-            "message": message,
-            "attributes": attributes,
+            "log_body": log_body,
+            "host_ip": host_ip,
         }
 
         try:
@@ -65,8 +58,8 @@ class LogAggregationClient:
     def debug(self, message: str, **kwargs):
         self.log(LogLevel.DEBUG, message, **kwargs)
 
-    def info(self, message: str, **kwargs):
-        self.log(LogLevel.INFO, message, **kwargs)
+    def info(self, recorded_at: datetime, log_body: str, host_ip: str):
+        self.log(recorded_at, LogLevel.INFO, log_body, host_ip)
 
     def warning(self, message: str, **kwargs):
         self.log(LogLevel.WARNING, message, **kwargs)
@@ -79,7 +72,7 @@ class LogAggregationClient:
 
     """ Background thread that flushes the logs periodically """
     def _flush_loop(self):
-        while self._running():
+        while self._running:
             self._flush_batch()
             threading.Event().wait(self.config.flush_interval)
 
@@ -101,12 +94,12 @@ class LogAggregationClient:
         # Send batch to the aggregator
         try:
             response = requests.post(
-                f"{self.config.aggregator_url}/ingest/batch",
+                f"{self.config.aggregation_url}/ingest/batch",
                 json={"logs": batch},
                 timeout=5.0,
             )
 
-            if response.status != 200:
+            if response.status_code != 200:
                 # Re-queue failed logs (best effort approach)
                 for entry in batch:
                     try:

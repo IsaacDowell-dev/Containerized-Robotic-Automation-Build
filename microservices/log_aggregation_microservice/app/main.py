@@ -3,9 +3,9 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import asyncio
 
-from ingestion import app as ingestion_app, get_buffer
-from processor import BatchProcessor, ProcessorConfig
-from query import router as query_router
+from app.routers.ingestion import app as ingestion_app, get_buffer
+from app.routers.query import router as query_router
+from app.services.processor import BatchProcessor, ProcessorConfig
 
 # Singelton processor instance
 processor: BatchProcessor = None
@@ -15,15 +15,16 @@ processor: BatchProcessor = None
 async def lifespan(app: FastAPI):
     global processor
 
-    # Start the batch processor
+    # Obtain the buffer from the ingestion api
     buffer = await get_buffer()
+
+    # Define contant configurations for the batch processor
     config = ProcessorConfig(
         batch_size=1000,
         flush_interval=5.0,
     )
 
-    # Establish the database engine and start a session
-
+    # Initialize the BatchProcessor object 
     processor = BatchProcessor(buffer, config)
 
     # Start the processor in the background

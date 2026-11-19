@@ -3,7 +3,7 @@ from datetime import datetime, UTC
 from typing import List
 import asyncio
 
-from models import Log # SQLModel log standard object format
+from app.models.log import Log # SQLModel log standard object format
 
 """ Return the current UTC datetime"""
 def utc_now() -> datetime:
@@ -24,22 +24,26 @@ async def get_buffer() -> asyncio.Queue:
 app = FastAPI(title="Log Ingestion API")
 
 """ Logging endpoint for fast, low-volume logging"""
-@app.post("/logging-ingest")
+@app.post("/ingest")
 async def ingest_single_log(log: Log, request: Request): 
+    print(f"[LOG AGG] Received request: {request}")
+    print(f"[LOG AGG] Received log: {log}")
     # 1. Acquire the buffer
     buffer = await get_buffer()
 
     # 2. Push the incoming log into a buffer for batch processing
     try:
         buffer.put_nowait(log) # puts item into queue without blocking
+        print(f"[LOG AGG] Added received log to queue.")
         return {"status": "accepted", "queue_size": buffer.qsize()}
     except asyncio.QueueFull:
         # Buffer is full, so apply backpressure
         raise HTTPException(status_code=503, detail="buffer_full")
 
 """ Logging endpoint for ingesting a batch of logs"""
-@app.post("/logging-ingest/batch")
+@app.post("/ingest/batch")
 async def ingest_batch_logs(batch: List[Log], request: Request):
+    print(f"[LOG AGG / BATCH] Received request: {request}")
     # 1. Acquire the buffer
     buffer = await get_buffer()
     accepted = 0
