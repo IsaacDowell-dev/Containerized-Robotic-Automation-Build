@@ -1,8 +1,10 @@
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Annotated
+from typing import AsyncGenerator
 
-from app.database.session import get_async_session
+from app.database import sessionmanager
 
-# Type alias for DRY dependency injection
-AsyncSessionDep = Annotated[AsyncSession, Depends(get_async_session)]
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async for session in sessionmanager.get_session():
+        async with session.begin():
+            yield session

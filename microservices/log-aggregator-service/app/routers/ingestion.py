@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, UTC
 # from typing import List
 # import asyncio
 
 import app.models as models
-from app.schemas.logs import (
+from app.schemas import (
     LogCreate, 
     LogResponse, 
     #PaginatedLogResponse # SQLModel log standard object format
 )
-from app.dependencies import AsyncSessionDep
+from app.dependencies import get_db
 
 # Router instance to mount the ingest route to the main.py app
 router = APIRouter()
@@ -20,9 +21,9 @@ router = APIRouter()
     "",                                     # Absolute route: /api/ingest
     response_model=LogResponse,             # Response format for client
 )
-async def ingest_single_log(log: LogCreate, db: AsyncSessionDep): 
+async def ingest_single_log(log: LogCreate, db: AsyncSession = Depends(get_db)): 
     # Create a new log object and add it to the session
-    new_log = await models.Log(
+    new_log = models.Log(
         recorded_at=log.recorded_at,
         level=log.level,
         service=log.service,
@@ -32,11 +33,10 @@ async def ingest_single_log(log: LogCreate, db: AsyncSessionDep):
 
     # Commit the transaction, and get updated data from db
     await db.commit()
-    await db.refresh(new_log)
 
     return new_log
 
-""" Logging endpoint for ingesting a batch of logs"""
-@router.post("/batch")
-async def ingest_batch_logs(batch: List[Log], request: Request):
-    pass
+# """ Logging endpoint for ingesting a batch of logs"""
+# @router.post("/batch")
+# async def ingest_batch_logs(batch: List[Log], request: Request):
+#     pass

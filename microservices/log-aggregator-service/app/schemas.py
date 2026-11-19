@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 # Base level of a Log's data structure
 class LogBase(BaseModel):
-    recored_at: datetime
+    recorded_at: datetime
     level: str = Field(min_length=1, max_length=10)
     service: str = Field(min_length=1, max_length=10)
     log_body: str = Field(min_length=1)
@@ -18,8 +18,9 @@ class LogCreate(LogBase):
 
 # Server response model when querying a log
 class LogResponse(LogBase):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
+    # model_config = ConfigDict(from_attributes=True)
+    # id: int
+    pass
 
 # Paginated collection of logs
 # class PaginatedLogResponse(BaseModel):

@@ -6,7 +6,7 @@ from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from typing import List, Optional
 
-from app.db import Base
+from app.database import Base
 
 # SQLAlchemy Logs table declaration
 class Log(Base):

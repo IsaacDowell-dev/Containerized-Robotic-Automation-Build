@@ -1,12 +1,13 @@
 # Main entry point for the logging aggregation service
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from contextlib import asynccontextmanager
 import asyncio
 
 from app.routers import ingestion
-from app.dependencies import AsyncSessionDep
-from app.database.session import engine
+from app.dependencies import get_db
+from app.database import sessionmanager, Base
 # from app.routers.query import router as query_router
 # from app.services.processor import BatchProcessor, ProcessorConfig
 
@@ -27,10 +28,14 @@ async def lifespan(app: FastAPI):
         # flush_interval=5.0,
     # )
 
+    # Init the database session manager
+    sessionmanager.init_db()
+
     # Start the database engine
-    async with engine.begin() as conn:
+    async with sessionmanager.engine.begin() as conn:
         # Create database tables if they don't exist yet
-        await conn.run_async(Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all)
+    yield
 
     # Initialize the BatchProcessor object 
     # processor = BatchProcessor(buffer, config)
@@ -41,6 +46,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    await sessionmanager.close()
     # processor.stop()
     # processor_task.cancel()
 
@@ -52,7 +58,7 @@ app.include_router(ingestion.router, prefix="/api/ingest", tags=["ingest"])
 # app.include_router(query_router, prefix="api/query", tags=["query"])
 
 """ Health check endpoint """
-async def health(db: AsyncSessionDep):
+async def health(db: AsyncSession = Depends(get_db)):
     # TODO: Implement database query for health check
     # buffer = await get_buffer()
 
