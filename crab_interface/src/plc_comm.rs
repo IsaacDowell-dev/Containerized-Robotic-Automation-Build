@@ -9,7 +9,7 @@ use rust_ethernet_ip::{EipClient, PlcValue};
 pub async fn read_plc_tags() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Read plc tags called");
 
-    let mut client = EipClient::connect("192.168.6.32:2000").await?;
+    let mut client = EipClient::connect("192.168.6.32:44818").await?;
 
     let tags = ["Local:1:I.Data.8", "Local:1:I.Data.9"];
     let results = client.read_tags_batch(&tags).await?;
