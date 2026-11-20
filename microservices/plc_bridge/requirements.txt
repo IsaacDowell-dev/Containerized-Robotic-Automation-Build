@@ -1,2 +1,3 @@
 pycomm3
 python-dotenv
+requests

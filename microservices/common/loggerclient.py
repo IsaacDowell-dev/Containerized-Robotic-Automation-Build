@@ -17,7 +17,7 @@ class LogLevel(str, Enum):
 
 """ Configuration variables for logging client """
 @dataclass
-class LogConfig:
+class LoggerConfig:
     service_name: str
     log_ingest_url: str
     host_ip: str
@@ -27,7 +27,7 @@ class LogConfig:
 
 """ Client object for sending logs to the aggregation service """
 class LoggerClient:
-    def __init__(self, config: LogConfig):
+    def __init__(self, config: LoggerConfig):
         self.config = config
         self._queue = queue.Queue(maxsize=config.max_queue_size)
         self._running = True
@@ -51,6 +51,7 @@ class LoggerClient:
 
         try:
             self._queue.put_nowait(entry)
+            print(f"[{status.value}] ({self.config.service_name}): {log_body}")
         except queue.Full:
             # Drop logs if the queue is full
             pass

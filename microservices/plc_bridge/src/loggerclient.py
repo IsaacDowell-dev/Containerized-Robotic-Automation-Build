@@ -1,0 +1,125 @@
+# Client library for sending logs to the aggregation service
+import requests
+from dataclasses import dataclass
+from datetime import datetime, UTC
+from enum import Enum
+import queue
+import threading
+import atexit
+
+""" Enumerator describing different log levels that are accepted """
+class LogLevel(str, Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+""" Configuration variables for logging client """
+@dataclass
+class LoggerConfig:
+    service_name: str
+    log_ingest_url: str
+    host_ip: str
+    batch_size: int = 100
+    flush_interval: float = 5.0
+    max_queue_size: int = 10000
+
+""" Client object for sending logs to the aggregation service """
+class LoggerClient:
+    def __init__(self, config: LoggerConfig):
+        self.config = config
+        self._queue = queue.Queue(maxsize=config.max_queue_size)
+        self._running = True
+
+        # Start background flushing thread
+        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+        self._flush_thread.start()
+
+        # Ensure flush on exit
+        atexit.register(self.close)
+    
+    """ Log a message; queues the log for sending and is non-blocking """
+    def log(self, status: LogLevel, log_body: str):
+        entry = {
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "level": status.value,
+            "source": self.config.service_name,
+            "log_body": log_body,
+            "host": self.config.host_ip,
+        }
+
+        try:
+            self._queue.put_nowait(entry)
+            print(f"[{status.value}] ({self.config.service_name}): {log_body}")
+        except queue.Full:
+            # Drop logs if the queue is full
+            pass
+
+    """ Top-level logging library functions """
+    def debug(self,log_body: str):
+        self.log(LogLevel.DEBUG, log_body)
+
+    def info(self, log_body: str):
+        self.log(LogLevel.INFO, log_body)
+
+    def warning(self, log_body: str):
+        self.log(LogLevel.WARNING, log_body)
+
+    def error(self, log_body: str):
+        self.log(LogLevel.ERROR, log_body)
+
+    def critical(self, log_body: str):
+        self.log(LogLevel.CRITICAL, log_body)
+
+    """ Background thread that flushes the logs periodically """
+    def _flush_loop(self):
+        while self._running:
+            self._flush_batch()
+            threading.Event().wait(self.config.flush_interval)
+
+    """ Flush pending logs to the aggregator """
+    def _flush_batch(self):
+        batch = []
+
+        # Drain the queue (up to batch size)
+        while len(batch) < self.config.batch_size:
+            try:
+                entry = self._queue.get_nowait()
+                batch.append(entry)
+            except queue.Empty:
+                break
+
+        # if there are no logs to send, then end flush
+        if not batch:
+            return
+
+        # Send the batch to the batch log ingest api endpoint
+        try:
+            response = requests.post(
+                f"{self.config.log_ingest_url}/ingest/batch",
+                json={"logs": batch},
+                timeout=5.0,
+            )
+
+            if response.status_code != 200:
+                # Re-queue failed logs
+                for entry in batch:
+                    try:
+                        self._queue.put_nowait(entry)
+                    except queue.Full:
+                        break
+        except requests.RequestException:
+            # Network error - re-queue logs
+            for entry in batch:
+                try:
+                    self._queue.put_nowait(entry)
+                except queue.Full:
+                    break
+        
+    """ Flush remaining logs and stop the client """
+    def close(self):
+        self._running = False
+        
+        # Final flush
+        self._flush_batch()
