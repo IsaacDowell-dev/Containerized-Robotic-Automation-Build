@@ -1,15 +1,11 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy file containing required modules
-COPY dependencies.txt .
+COPY requirements.txt .
 
-# Install all modules in the dependencies.txt file
-RUN pip install --no-cache-dir -r dependencies.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code
-COPY plc_bridge.py .
+COPY plc_bridge_service.py .
 
-# Run the application
-CMD ["python", "plc_bridge.py"]
+CMD ["python", "plc_bridge_service.py"]

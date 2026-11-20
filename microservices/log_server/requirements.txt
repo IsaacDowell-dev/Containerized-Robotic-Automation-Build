@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[standard]
+pydantic
+greenlet
+aiomysql
