@@ -1,0 +1,4 @@
+pycomm3
+requests
+python-dotenv
+sense-hat
