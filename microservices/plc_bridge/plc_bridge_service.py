@@ -1,6 +1,6 @@
 import time
-import os
 from dotenv import load_dotenv
+import os
 from pycomm3 import LogixDriver, CommError
 
 # Load environment variables
@@ -25,7 +25,7 @@ class PlcBridge:
     def __init__(self, controller: str, robot: str):
         # Init the logix driver connections to both plcs
         self.controller = LogixDriver(controller, init_tags=True)
-        self.robot = LogixDrvier(robot, init_tags=True)
+        self.robot = LogixDriver(robot, init_tags=True)
         # Keep track of the last activity from either plc
         self._last_activity = 0.0
 
@@ -72,6 +72,7 @@ class PlcBridge:
                 writes.append((target_tag, result.value)) # Write the value of the source tags to their respective targets
             else:
                 # TODO: Log a warning about failing to read tags from the controller 
+                pass
 
         if writes:
             self.robot.write(*writes)
@@ -87,6 +88,7 @@ class PlcBridge:
                 time.sleep(POLL_INTERVAL)
             except CommError as e:
                 # TODO: Log the connection error and try to reconnect
+                print("Connection failed, trying again..")
                 self._reconnect()
             except Exception:
                 # TODO: Log the unexpected error that occurred
@@ -116,6 +118,6 @@ if __name__ == "__main__":
     bridge = PlcBridge(CONTROLLER_PLC, ROBOT_PLC)
     try:
         bridge.run()
-    except KeyBoardInterruption:
+    except KeyboardInterrupt:
         bridge.close()
-
+    print("Done")

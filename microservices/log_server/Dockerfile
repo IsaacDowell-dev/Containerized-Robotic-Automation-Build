@@ -35,3 +35,6 @@ ENV DB_NAME="Sandbox2"
 
 # Run with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+
+# Build with:	$docker build -t log-server-image .
+# Run with: 	$docker run -d --name log-server --host 0.0.0.0 --port 8000:8000 log-server-image

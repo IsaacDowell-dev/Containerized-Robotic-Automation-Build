@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ConfigDict
 class LogBase(BaseModel):
     recorded_at: datetime
     level: str = Field(min_length=1, max_length=10)
-    service: str = Field(min_length=1, max_length=10)
+    service: str = Field(min_length=1, max_length=25)
     log_body: str = Field(min_length=1)
     host: str = Field(min_length=7, max_length=15)
 
@@ -21,6 +21,10 @@ class LogResponse(LogBase):
     # model_config = ConfigDict(from_attributes=True)
     # id: int
     pass
+
+# Server response model for a batch of logs being added
+class BatchLogResponse(BaseModel):
+    logs: List[LogResponse]
 
 # Paginated collection of logs
 # class PaginatedLogResponse(BaseModel):

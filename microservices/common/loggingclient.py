@@ -1,7 +1,7 @@
 # Client library for sending logs to the aggregation service
 import requests
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, UTC
 from enum import Enum
 import queue
 import threading
@@ -19,19 +19,20 @@ class LogLevel(str, Enum):
 @dataclass
 class LogConfig:
     service_name: str
-    aggregation_url: str
+    log_ingest_url: str
+    host_ip: str
     batch_size: int = 100
     flush_interval: float = 5.0
     max_queue_size: int = 10000
 
 """ Client object for sending logs to the aggregation service """
-class LogAggregationClient:
+class LoggerClient:
     def __init__(self, config: LogConfig):
         self.config = config
         self._queue = queue.Queue(maxsize=config.max_queue_size)
         self._running = True
 
-        # Start backgroynd flushing thread
+        # Start background flushing thread
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
 
@@ -39,13 +40,13 @@ class LogAggregationClient:
         atexit.register(self.close)
     
     """ Log a message; queues the log for sending and is non-blocking """
-    def log(self, recorded_at: str, status: LogLevel, log_body: str, host_ip: str):
+    def log(self, status: LogLevel, log_body: str):
         entry = {
-            "recorded_at": recorded_at,
-            "status": status.value,
-            "service": self.config.service_name,
+            "recorded_at": datetime.now(UTC).isostring(),
+            "level": status.value,
+            "source": self.config.service_name,
             "log_body": log_body,
-            "host_ip": host_ip,
+            "host": config.host_ip,
         }
 
         try:
@@ -55,20 +56,20 @@ class LogAggregationClient:
             pass
 
     """ Top-level logging library functions """
-    def debug(self, message: str, **kwargs):
-        self.log(LogLevel.DEBUG, message, **kwargs)
+    def debug(self,log_body: str):
+        self.log(LogLevel.DEBUG, log_body)
 
-    def info(self, recorded_at: datetime, log_body: str, host_ip: str):
-        self.log(recorded_at, LogLevel.INFO, log_body, host_ip)
+    def info(self, log_body: str):
+        self.log(LogLevel.INFO, log_body)
 
-    def warning(self, message: str, **kwargs):
-        self.log(LogLevel.WARNING, message, **kwargs)
+    def warning(self, log_body: str):
+        self.log(LogLevel.WARNING, log_body)
 
-    def error(self, message: str, **kwargs):
-        self.log(LogLevel.ERROR, message, **kwargs)
+    def error(self, log_body: str):
+        self.log(LogLevel.ERROR, log_body)
 
-    def critical(self, message: str, **kwargs):
-        self.log(LogLevel.CRITICAL, message, **kwargs)
+    def critical(self, log_body: str):
+        self.log(LogLevel.CRITICAL, log_body)
 
     """ Background thread that flushes the logs periodically """
     def _flush_loop(self):
@@ -80,7 +81,7 @@ class LogAggregationClient:
     def _flush_batch(self):
         batch = []
 
-        # Drain the queue up to batch size
+        # Drain the queue (up to batch size)
         while len(batch) < self.config.batch_size:
             try:
                 entry = self._queue.get_nowait()
@@ -88,25 +89,25 @@ class LogAggregationClient:
             except queue.Empty:
                 break
 
+        # if there are no logs to send, then end flush
         if not batch:
             return
 
-        # Send batch to the aggregator
+        # Send the batch to the batch log ingest api endpoint
         try:
             response = requests.post(
-                f"{self.config.aggregation_url}/ingest/batch",
+                f"{self.config.log_ingest_url}/ingest/batch",
                 json={"logs": batch},
                 timeout=5.0,
             )
 
             if response.status_code != 200:
-                # Re-queue failed logs (best effort approach)
+                # Re-queue failed logs
                 for entry in batch:
                     try:
                         self._queue.put_nowait(entry)
                     except queue.Full:
                         break
-
         except requests.RequestException:
             # Network error - re-queue logs
             for entry in batch:
@@ -114,7 +115,7 @@ class LogAggregationClient:
                     self._queue.put_nowait(entry)
                 except queue.Full:
                     break
-
+        
     """ Flush remaining logs and stop the client """
     def close(self):
         self._running = False
